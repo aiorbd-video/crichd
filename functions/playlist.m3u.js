@@ -1,71 +1,77 @@
-function deny() {
-  const ref =
-    "R-" +
-    crypto.randomUUID().replace(/-/g, "").slice(0, 12).toUpperCase();
+export default {
+  async fetch(request) {
+    const url = new URL(request.url);
 
-  return new Response(
-    `Access Denied
+    // ---- CORS PREFLIGHT ----
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET,HEAD,OPTIONS",
+          "Access-Control-Allow-Headers": "*",
+          "Access-Control-Max-Age": "86400"
+        }
+      });
+    }
 
-You don't have permission to access this resource.
+    const target = url.searchParams.get("url");
+    if (!target) {
+      return new Response("Missing ?url=", { status: 400 });
+    }
 
-Reference #${ref}`,
-    {
-      status: 403,
+    const targetUrl = new URL(target);
+
+    // ---- BROWSER-LIKE HEADERS ----
+    const headers = {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+      "Accept": "*/*",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Referer": "https://profamouslife.com/",
+      "Origin": "https://profamouslife.com",
+      "Host": targetUrl.host
+    };
+
+    // ---- RANGE SUPPORT (CRITICAL) ----
+    const range = request.headers.get("Range");
+    if (range) headers["Range"] = range;
+
+    const upstream = await fetch(target, {
+      method: "GET",
+      headers
+    });
+
+    const ct = upstream.headers.get("content-type") || "";
+
+    // ---- M3U8 REWRITE ----
+    if (ct.includes("mpegurl") || target.endsWith(".m3u8")) {
+      let text = await upstream.text();
+      const base = target.substring(0, target.lastIndexOf("/") + 1);
+
+      text = text.replace(/^(?!#)(.+)$/gm, line => {
+        const abs = line.startsWith("http") ? line : base + line;
+        return `${url.origin}/?url=${encodeURIComponent(abs)}`;
+      });
+
+      return new Response(text, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/vnd.apple.mpegurl",
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": "no-store"
+        }
+      });
+    }
+
+    // ---- TS / AAC SEGMENTS ----
+    return new Response(upstream.body, {
+      status: upstream.status,
       headers: {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "no-store",
-      },
-    }
-  );
-}
-
-export async function onRequest({ request }) {
-  const ALLOWED = "https://bd71.vercel.app";
-
-  const origin = request.headers.get("Origin");
-  const referer = request.headers.get("Referer");
-
-  // 🔒 Only allow from bd71.vercel.app
-  if (
-    !(
-      (origin && origin.startsWith(ALLOWED)) ||
-      (referer && referer.startsWith(ALLOWED))
-    )
-  ) {
-    return deny();
+        "Content-Type": ct,
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-store"
+      }
+    });
   }
-
-  // 🔗 NEW SOURCE
-  const SOURCE =
-    "https://github.com/abusaeeidx/CricHd-playlists-Auto-Update-permanent/raw/main/ALL.m3u";
-
-  const res = await fetch(SOURCE);
-  if (!res.ok) return deny();
-
-  const text = await res.text();
-  const lines = text.split("\n");
-
-  let output = [];
-  for (let line of lines) {
-    line = line.trim();
-
-    // ❌ remove only unwanted lines
-    if (
-      line.startsWith("#EXTVLCOPT:http-user-agent") ||
-      line.startsWith("#EXTHTTP:")
-    ) {
-      continue;
-    }
-
-    output.push(line);
-  }
-
-  return new Response(output.join("\n"), {
-    headers: {
-      "Access-Control-Allow-Origin": ALLOWED,
-      "Content-Type": "text/plain; charset=utf-8",
-      "Content-Disposition": 'inline; filename="playlist.m3u"',
-      "Cache-Control": "no-store",
-    },
-  });
-}
+};
