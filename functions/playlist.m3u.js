@@ -1,28 +1,46 @@
+const ALLOWED = [
+  "https://bd71.vercel.app",
+  "http://localhost",
+  "http://localhost:3000"
+];
+
 export default {
   async fetch(request) {
     const url = new URL(request.url);
 
-    // ---- CORS PREFLIGHT ----
-    if (request.method === "OPTIONS") {
-      return new Response(null, {
-        status: 204,
+    const origin = request.headers.get("Origin") || "";
+    const referer = request.headers.get("Referer") || "";
+
+    const allowed = ALLOWED.some(d =>
+      origin.startsWith(d) || referer.startsWith(d)
+    );
+
+    // ---- BOT DECEPTION ----
+    if (!allowed || isBot(request)) {
+      // Randomize response to avoid fingerprinting
+      if (url.pathname.endsWith(".m3u8") || url.search.includes(".m3u8")) {
+        return new Response(fakeM3U8(), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/vnd.apple.mpegurl"
+          }
+        });
+      }
+
+      return new Response(fakeSegment(), {
+        status: 200,
         headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET,HEAD,OPTIONS",
-          "Access-Control-Allow-Headers": "*",
-          "Access-Control-Max-Age": "86400"
+          "Content-Type": "video/mp2t"
         }
       });
     }
 
+    // ---- NORMAL PROXY FLOW (REAL USERS) ----
     const target = url.searchParams.get("url");
-    if (!target) {
-      return new Response("Missing ?url=", { status: 400 });
-    }
+    if (!target) return new Response("Missing url", { status: 400 });
 
-    const targetUrl = new URL(target);
+    const t = new URL(target);
 
-    // ---- BROWSER-LIKE HEADERS ----
     const headers = {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
@@ -30,21 +48,15 @@ export default {
       "Accept-Language": "en-US,en;q=0.9",
       "Referer": "https://profamouslife.com/",
       "Origin": "https://profamouslife.com",
-      "Host": targetUrl.host
+      "Host": t.host
     };
 
-    // ---- RANGE SUPPORT (CRITICAL) ----
     const range = request.headers.get("Range");
     if (range) headers["Range"] = range;
 
-    const upstream = await fetch(target, {
-      method: "GET",
-      headers
-    });
-
+    const upstream = await fetch(target, { headers });
     const ct = upstream.headers.get("content-type") || "";
 
-    // ---- M3U8 REWRITE ----
     if (ct.includes("mpegurl") || target.endsWith(".m3u8")) {
       let text = await upstream.text();
       const base = target.substring(0, target.lastIndexOf("/") + 1);
@@ -55,22 +67,17 @@ export default {
       });
 
       return new Response(text, {
-        status: 200,
         headers: {
           "Content-Type": "application/vnd.apple.mpegurl",
-          "Access-Control-Allow-Origin": "*",
-          "Cache-Control": "no-store"
+          "Access-Control-Allow-Origin": origin
         }
       });
     }
 
-    // ---- TS / AAC SEGMENTS ----
     return new Response(upstream.body, {
-      status: upstream.status,
       headers: {
         "Content-Type": ct,
-        "Access-Control-Allow-Origin": "*",
-        "Cache-Control": "no-store"
+        "Access-Control-Allow-Origin": origin
       }
     });
   }
